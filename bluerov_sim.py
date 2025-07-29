@@ -28,6 +28,7 @@ class Simulator:
 		self.eta1, self.eta2 = self.eta[0:3], self.eta[3:6]
 		self.nu = nu
 		self.nu1, self.nu2 = self.nu[0:3], self.nu[3:6]
+		self.nu_rel = self.nu
 		self.gamma = np.zeros(6)
 
 		self.m = m
@@ -79,25 +80,26 @@ class Simulator:
 		self.C = self.Crb + self.Ca
 
 	def compute_D(self):
-		self.D = self.Dl + np.diag(np.diag(self.Dq) * np.abs(self.nu))
+		self.D = self.Dl + np.diag(np.diag(self.Dq) * np.abs(self.nu_rel))
 
 	def compute_T(self, T):
 		self.T = np.zeros(6)
 		self.T[2] = -2	# N (Restitution force: gravity + buoyancy)
-		self.compute_external_force()
 		self.T += T
 
-
 	def compute_gamma(self):
-		self.gamma = np.matmul(self.Minv, - np.matmul(self.C, self.nu) - np.matmul(self.D, self.nu) + self.T)
+		self.gamma = np.matmul(self.Minv, - np.matmul(self.C, self.nu) - np.matmul(self.D, self.nu_rel) + self.T)
 
+	def update_external_force(self):
+		v_fluid =  np.array([np.random.normal(self.current_speed[0], self.current_std[0]), np.random.normal(self.current_speed[1], self.current_std[1]), np.random.normal(self.current_speed[2], self.current_std[2]), 0, 0, 0])
+		self.nu_rel = self.nu - v_fluid
 
-	def compute_external_force(self):
-		v_fluid =  np.array([np.random.normal(self.current_speed[0], self.current_std[0]), np.random.normal(self.current_speed[1], self.current_std[1]), np.random.normal(self.current_speed[2], self.current_std[2])])
-		v_rel = v_fluid - self.nu[0:3]
-		self.T[0:3] += np.diag(self.Dq)[0:3] * v_rel
+	def update_states(self, eta, nu):
+		self.nu = nu
+		self.eta = eta
 
 	def update(self, T_ext):
+		self.update_external_force()
 		# DAMPING
 		self.compute_D()
 		# CORIOLIS AND CENTRIPETAL

@@ -1,8 +1,9 @@
 import numpy as np
 import tqdm
 from bluerov_sim import Simulator
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation
 import bluerov_plot as bplt
+from display3D import Scene3D
 
 class BlueROV:
 	def __init__(self, k_smc, lambda_smc, phi):
@@ -54,6 +55,7 @@ class BlueROV:
 class ThrusterSystem:
 	def __init__(self, T, n_thrusters, thruster_limits=(-20, 20), wn=30, zeta=0.7):
 		self.T = T
+		self.Tp = np.matmul(np.linalg.inv(np.matmul(T.T, T)), T.T)
 		self.n_thrusters = n_thrusters
 		self.min_force, self.max_force = thruster_limits
 
@@ -63,20 +65,20 @@ class ThrusterSystem:
 
 		# States: force and velocity for each thruster
 		self.force = np.zeros(n_thrusters)
-		self.velocity = np.zeros(n_thrusters)
+		self.rpm = np.zeros(n_thrusters)
 
 	def update(self, dt, tau_desired):
 		# Compute desired thruster forces using pseudo-inverse control allocation
-		thruster_cmd = self.T.T @ tau_desired
+		thruster_cmd = self.Tp @ tau_desired
 
 		# Clip desired thruster commands to actuator physical limits
 		thruster_cmd = np.clip(thruster_cmd, self.min_force, self.max_force)
 
 		# Update thruster forces using second-order propeller dynamics
 		# Discretize using explicit Euler (or better with RK4 if you want more accuracy)
-		accel = self.wn**2 * (thruster_cmd - self.force) - 2 * self.zeta * self.wn * self.velocity
-		self.velocity += accel * dt
-		self.force += self.velocity * dt
+		accel = self.wn**2 * (thruster_cmd - self.force) - 2 * self.zeta * self.wn * self.rpm
+		self.rpm += accel * dt
+		self.force += self.rpm * dt
 
 		# Clip again to be sure the physical force doesn't exceed limits
 		self.force = np.clip(self.force, self.min_force, self.max_force)
@@ -108,7 +110,7 @@ class Controller:
 		self.eta_err = np.zeros(6)
 		self.eta_tol = np.array([0.05, 0.05, 0.05, 0.05, 0.05, 0.05])
 		self.nu_err = np.zeros(6)
-		self.nu_tol = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+		self.nu_tol = np.array([0.01, 0.01, 0.01, 0.01, 0.01, 0.01])
 
 		self.T = np.array([
 			[  0.866,   0.866,  -0.839,  -0.839,   0.000,   0.000,   0.000,   0.000],
@@ -118,7 +120,7 @@ class Controller:
 			[  0.0654,  0.0654,  0.0653,  0.0653,  0.218,  -0.218,   0.218,  -0.218],
 			[ -0.158,   0.158,   0.166,  -0.166,   0.000,   0.000,   0.000,   0.000]
 		])
-		self.thrusters = ThrusterSystem(T=self.T, n_thrusters=8, thruster_limits=(-35, 45), wn=30, zeta=1.0)
+		self.thrusters = ThrusterSystem(T=self.T, n_thrusters=8, thruster_limits=(-35, 45), wn=8, zeta=0.9)
 		self.f_thrust = np.zeros(6)
 
 		self.SMC = SlidingModeController3D(k_smc=k_smc, lambda_smc=lambda_smc, phi=phi)
@@ -138,7 +140,7 @@ class Controller:
 			
 	def manage_waypoint(self, eta, nu):
 		if self.desired_tf is not None:
-			if np.all(np.abs(self.eta_err) < self.eta_tol):
+			if np.all(np.abs(self.eta_err) < self.eta_tol) and np.all(np.abs(self.nu_err) < self.nu_tol) :
 				self.last_desired_tf = self.desired_tf
 				# print('Arrived')
 				self.desired_tf = None
@@ -156,19 +158,26 @@ class Controller:
 					self.desired_tf = eta
 			
 	def compute_error(self, eta, nu):
-		eta_diff = self.desired_tf - eta
-		R_world_to_bluerov = R.from_euler('xyz', eta[3:6]).as_matrix().T  # transpose = inverse
+		t_world_rov = eta[:3]
+		R_world_rov = Rotation.from_euler('zyx', eta[3:]).as_matrix()
+		T_world_rov = build_T(R_world_rov, t_world_rov)
 
-		pos_error_world = eta_diff[:3]
-		oriented_pos_error = np.matmul(R_world_to_bluerov, pos_error_world)[:2]
-		eta_diff[:2] = oriented_pos_error
-		if np.linalg.norm(eta_diff[:3]) > 1.0:
-			eta_diff[:3] /= np.linalg.norm(eta_diff[:3])
+		t_world_target = self.desired_tf[:3]
+		R_world_target = Rotation.from_euler('zyx', self.desired_tf[3:]).as_matrix()
+		T_world_target = build_T(R_world_target, t_world_target)
 
-		if np.linalg.norm(eta_diff[3:]) > 0.3:
-			eta_diff[3:] /= np.linalg.norm(eta_diff[3:])
+		T_rov_target = np.matmul(np.linalg.inv(T_world_rov), T_world_target)
 
-		self.eta_err = eta_diff
+		eta_err = np.zeros(6)
+		eta_err[:3] = T_rov_target[0:3, 3]
+		eta_err[3:] = (self.desired_tf - eta)[3:] #Rotation.from_matrix(T_rov_target[0:3, 0:3]).as_euler('zyx')
+		# if np.linalg.norm(eta_diff[:3]) > 5.0:
+		# 	eta_diff[:3] /= np.linalg.norm(eta_diff[:3])
+
+		# if np.linalg.norm(eta_err[3:]) > 0.3:
+		# 	eta_err[3:] /= np.linalg.norm(eta_err[3:])
+
+		self.eta_err = eta_err
 		self.nu_err = nu
 		
 	def update(self, dt, eta, nu):
@@ -182,6 +191,13 @@ class Controller:
 		self.f_thrust = self.T @ self.thrusters.force
 
 
+def build_T(R, t):
+	T = np.zeros((4, 4), dtype=float)
+	T[0:3, 0:3] = R
+	T[0:3, 3] = t
+	T[3, 3] = 1
+	return T
+
 
 def compute_total_distance(etas):
 	d = 0
@@ -192,11 +208,11 @@ def compute_total_distance(etas):
 
 
 
-def simulate(k_smc, lambda_smc, phi, current_params):
-	dt = 0.01
+def simulate(k_smc, lambda_smc, phi, current_params, train=False):
+	dt = 0.03
 	
 	bl = BlueROV(k_smc, lambda_smc, phi)
-	bl.controller.add_waypoint(np.array([[0.5, 5.0, 0, 0, 0, 0], [-4.0, 0.0, -3.0, 0, 0, 0], [0, 0, 20, 0, 0, 0]]))
+	bl.controller.add_waypoint(np.array([[0.5, 5.0, 0, 0, 0, 0], [-4.0, 0.0, -3.0, 0, 0, 0], [0, 0, 10, 0, 0, 0]]))
 	sim = Simulator(dt, bl.eta, bl.nu, bl.m, bl.rg, bl.I0, bl.Ma, bl.Dl, bl.Dq, current_params)
 
 	N = 2000
@@ -206,11 +222,13 @@ def simulate(k_smc, lambda_smc, phi, current_params):
 	time = np.zeros(N)
 	nus = np.zeros((N, 6))
 	etas = np.zeros((N, 6))
+	quats = np.zeros((N, 4))
 	eta_errs = np.zeros((N, 6))
 	cmds = np.zeros((N, 6))
 	forces = np.zeros((N, 8))
 
 	for i in range(N):
+		sim.update_states(bl.eta, bl.nu)
 		sim.update(bl.control_force)
 		bl.update(dt, sim.gamma)
 
@@ -222,42 +240,52 @@ def simulate(k_smc, lambda_smc, phi, current_params):
 		cmds[i] = bl.controller.SMC.u
 		forces[i] = bl.controller.thrusters.force
 		time[i] = (i+1)*dt
+		quats[i] = Rotation.from_euler('zyx', bl.eta[3:]).as_quat()
 
 		if bl.controller.mission_finished:
 			print(f"Total simulation time: {i*dt:.3f} s")
-			# return i * dt
+			if train:
+				return i * dt
 			break
 	
-	compute_total_distance(etas)
 
-	bplt.plot(time[:i], eta_errs[:i], 'eta errors')
-	bplt.plot(time[:i], cmds[:i], 'U cmd')
-	bplt.plot(time[:i], nus[:i], 'nu')
-	bplt.plot_nm(time[:i], forces[:i], 4, 2, 'C force cmd')
+	if not train:
+		compute_total_distance(etas)
+		bplt.plot(time[:i], eta_errs[:i], 'eta errors')
+		# bplt.plot(time[:i], etas[:i], 'eta')
+		# bplt.plot(time[:i], cmds[:i], 'U cmd')
+		# bplt.plot(time[:i], nus[:i], 'nu')
+		# bplt.plot_nm(time[:i], forces[:i], 4, 2, 'C force cmd')
 
-	bplt.show()
+		bplt.show()
 
-	bplt.plot_3D(etas[:i])
+		# bplt.plot_3D(etas[:i])
 
-def main_2():
+		Scene3D(etas[::5,3:], quats[::5])
+
+def main(most_probable_k_values = None, most_probable_l_values = None):
 	current_params = [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)]
-	k_smc = np.array([82.19050697, 63.3188027, 27.44381288, 26.92402467, 19.05816569, 87.67570092])
-	lambda_smc = np.array([4.55458967, 2.22107203, 5.06772488, 4.16064917, 4.26646995, 4.44595175])
+	if most_probable_k_values is not None and most_probable_l_values is not None:
+		k_smc 		= most_probable_k_values
+		lambda_smc 	= most_probable_l_values
+	else:
+		k_smc 		= np.array([15, 15, 15, 1, 1, 1])
+		lambda_smc 	= np.array([1,1,1,1,1,1])
 	phi = 0.8
 	t = simulate(k_smc, lambda_smc, phi, current_params)
-	print(t)
 
 
-def main_1():
+def train():
 	current_params = [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)]
 	# current_params = [(0.5, -0.5, 0), (0.05, 0.05, 0)]
 	refining_step = 10
-	nb_pool = 20
-	pool_size = 20
+	nb_pool = 5
+	pool_size = 5
 
 	phi = 0.8
-	most_probable_k_values = [80.28652322, 63.13938178, 31.62434937, 39.31356554, 17.15406625, 82.97375505]
-	most_probable_l_values = [3.37883657, 1.64074502, 5.678491, 4.97961957, 1.78616331, 1.12095108]
+	# most_probable_k_values = [80.28652322, 63.13938178, 31.62434937, 39.31356554, 17.15406625, 82.97375505]
+	most_probable_k_values = np.array([15.467418184576106, 16.914037455647865, 12.894820929807382, 0.1054479995697465, 0.719519180074537, 9.936626577721984])
+	most_probable_l_values = np.array([0.8572380182629944, 0.704922768864575, 2.5543558503257913, 1.8157235640885756, 1.5516382871745191, 2.0466708522707298])
 	k_disparity = 10
 	l_disparity = 3
 
@@ -267,8 +295,8 @@ def main_1():
 		for _ in tqdm.tqdm(range(nb_pool)):
 			pool_most_probable_k_values = np.abs(np.random.normal(most_probable_k_values, k_disparity))
 			pool_most_probable_l_values = np.abs(np.random.normal(most_probable_l_values, l_disparity))
-			pool_k_disparity = 3
-			pool_l_disparity = 0.5
+			pool_k_disparity = 1
+			pool_l_disparity = 0.2
 
 			pool_params = {'k':None, 'l':None, 't':None}
 			pool_min_t = 1e9
@@ -276,7 +304,7 @@ def main_1():
 				k_smc = np.abs(np.random.normal(pool_most_probable_k_values, pool_k_disparity))
 				lambda_smc = np.abs(np.random.normal(pool_most_probable_l_values, pool_l_disparity))
 				
-				t = simulate(k_smc, lambda_smc, phi, current_params)
+				t = simulate(k_smc, lambda_smc, phi, current_params, True)
 				if t is None:
 					continue
 
@@ -299,29 +327,51 @@ def main_1():
 		if params['t'] is not None:
 			most_probable_k_values = params['k']
 			most_probable_l_values = params['l']
-			print(f"Min time at iteration {i}: {params['t']:.3f}s")
+			print(f"\n#####   #####\n\nMin time at iteration {i}: {params['t']:.3f}s\n\n#####   #####")
 	
-	print("k_smc:", most_probable_k_values)
-	print("lambda_smc:", most_probable_l_values)
+	print("k_smc:", list(most_probable_k_values))
+	print("lambda_smc:", list(most_probable_l_values))
 	print("min time:", min_t)
+
+	if min_t < 1e8:
+		return most_probable_k_values, most_probable_l_values
+	return None, None
 	# bplt.scatter1V(xs, times)
 	# bplt.show()
 
 
 if __name__ == '__main__':
-	main_2()
+	most_probable_k_values, most_probable_l_values = None, None
+	# most_probable_k_values, most_probable_l_values = train()
+	main(most_probable_k_values, most_probable_l_values)
 
 ### No current
-# k_smc = [80.28652322 63.13938178 31.62434937 39.31356554 17.15406625 82.97375505]
-# lambda_smc = [3.37883657 1.64074502 5.678491   4.97961957 1.78616331 1.12095108]
-# min_t = 14.480 s
+# k_smc: [5.40700645, 38.68051198, 20.20015466, 15.35008216, 17.04343491, 17.28390245]
+# lambda_smc: [3.05515945, 5.30145031, 3.45391764, 4.60171323, 1.15856585, 4.67305537]
+# min time: 29.56
 
-### No current
-# k_smc: [82.19050697 63.3188027  27.44381288 26.92402467 19.05816569 87.67570092]
-# lambda_smc: [4.55458967 2.22107203 5.06772488 4.16064917 4.26646995 4.44595175]
-# min time: 14.32
+# k_smc: [18.22584036, 51.80568287, 20.38428097, 18.37189206, 10.40452132, 13.19087835]
+# lambda_smc: [1.70350738, 1.50472984, 7.6521665, 3.06896862, 4.75386163, 1.71341387]
+# min time: 31.62
 
-### with current
-# k_smc: [64.21895646 57.94866604 34.89806393 26.78179783 28.69251328 94.58876751]
-# lambda_smc: [ 5.44071796  6.07685165  6.881452   12.16265169  7.32699484  3.50207908]
-# min time: 13.73
+# k_smc = [11.633583113769175, 44.727143482250575, 21.75386047445603, 30.64154971360749, 9.17427840251083, 18.396265025582213]
+# lambda_smc = [3.2953302921902368, 1.8096671647533182, 6.526687792359065, 6.186242550394451, 3.272071934664858, 1.7517318598337623]
+# min time: 28.12
+
+# k_smc: [28.737069424207913, 23.516074242820004, 30.72879137491225, 12.296151863669806, 1.5484619940566118, 10.34478325124432]
+# lambda_smc: [1.3920025174626218, 1.4357256668152414, 0.9425134604584097, 1.0241314741991898, 2.2218472153223305, 1.9270292249620224]
+# min time: 45.57
+
+
+# k_smc: [31.034326784012247, 19.80204922156703, 37.641414808222855, 17.021009903243492, 6.019285410604078, 15.582081789447745]
+# lambda_smc: [0.4809934812706951, 0.8091172870045026, 1.2026095137376307, 2.330303520374732, 1.7487693992756814, 0.691156074389597]
+# min time: 35.67
+
+
+# k_smc: [24.923345363680642, 27.787589010717248, 35.464239888581744, 14.653490919725549, 5.01017593122984, 9.193287213097445]
+# lambda_smc: [0.8922695346347758, 1.4406285168852726, 1.417835171548203, 0.5426852426710681, 4.295472667577729, 3.140243390945363]
+# min time: 36.51
+
+# k_smc: [15.467418184576106, 16.914037455647865, 12.894820929807382, 7.7054479995697465, 3.719519180074537, 9.936626577721984]
+# lambda_smc: [0.8572380182629944, 0.704922768864575, 2.5543558503257913, 1.8157235640885756, 1.5516382871745191, 2.0466708522707298]
+# min time: 43.35
