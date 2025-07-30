@@ -13,6 +13,8 @@ fps = 0
 
 tf_sequence = []
 frame_index = 0
+frame_index_float = 0
+playback_speed = 1
 
 # Camera control
 camera_radius = 10
@@ -22,6 +24,9 @@ pan_x, pan_y, pan_z = 0.0, 0.0, 0.0
 mouse_prev = [0, 0]
 mouse_button = None
 
+follow_robot = False
+running = True
+step_request = False
 
 def load_tf_sequence(seq):
     global tf_sequence
@@ -83,18 +88,24 @@ def draw_robot(tf):
     glPopMatrix()
 
 def display():
-    global frame_index
+    global camera_theta, camera_phi, pan_x, pan_y, pan_z, playback_speed
+
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     glLoadIdentity()
 
+    if follow_robot and tf_sequence is not None:
+        tf = tf_sequence[frame_index % len(tf_sequence)]
+        pos = tf[:3]
+        # Update center of rotation to robot position
+        pan_x, pan_y, pan_z = pos[0], pos[1], pos[2]
     # Convert spherical camera coordinates to Cartesian
     cx = camera_radius * np.sin(camera_phi) * np.cos(camera_theta)
     cy = camera_radius * np.sin(camera_phi) * np.sin(camera_theta)
     cz = camera_radius * np.cos(camera_phi)
 
     gluLookAt(cx + pan_x, cy + pan_y, -cz + pan_z,
-          pan_x, pan_y, pan_z,
-          0, 0, -1)
+        pan_x, pan_y, pan_z,
+        0, 0, -1)
 
     draw_ground()
 
@@ -105,6 +116,7 @@ def display():
     glDisable(GL_LIGHTING)
     glColor3f(1, 1, 1)
     draw_text(10, 580, f"FPS: {fps:.1f}")
+    draw_text(700, 580, f"Speed: {playback_speed:.2f}x")
 
     # Draw TF vector at bottom-center
     if tf_sequence is not None:
@@ -128,17 +140,50 @@ def draw_text(x, y, text, font=GLUT_BITMAP_HELVETICA_18):
     for ch in text:
         glutBitmapCharacter(font, ord(ch))
 
-def update(value):
-    global frame_index, frame_count, last_time, fps
-    frame_index += 1
+def keyboard(key, x, y):
+    global follow_robot, running, step_request
+    if key == b' ':
+        # Space toggles play/pause
+        running = not running
+    elif key == b's' or key == b'S':
+        # 's' steps one frame if paused
+        running = False
+        step_request = True
+    elif key == b'r' or key == b'R':
+        # 'r' resumes playing
+        running = True
+    elif key == b'f' or key == b'F':
+        follow_robot = not follow_robot
+    elif key == b'\x1b':  # ESC key
+        print("Exiting simulation...")
+        glutLeaveMainLoop()
 
-    frame_count += 1
-    current_time = time.time()
-    elapsed = current_time - last_time
-    if elapsed >= 1.0:
-        fps = frame_count / elapsed
-        frame_count = 0
-        last_time = current_time
+def special_keys(key, x, y):
+    global playback_speed
+
+    if key == GLUT_KEY_LEFT:
+        playback_speed = max(1/2**4, playback_speed / 2)
+    elif key == GLUT_KEY_DOWN:
+        playback_speed = 1.0
+    elif key == GLUT_KEY_RIGHT:
+        playback_speed = min(2**4, playback_speed * 2)
+
+def update(value):
+    global frame_index, frame_count, last_time, fps, running, step_request, playback_speed, frame_index_float
+    
+    if running or step_request:
+        step = playback_speed
+        frame_index_float += step
+        frame_index = int(frame_index_float)
+        step_request = False  # reset step request after stepping
+
+        current_time = time.time()
+        elapsed = current_time - last_time
+        frame_count += 1
+        if elapsed >= 1:
+            fps = frame_count / elapsed
+            frame_count = 0
+            last_time = current_time
 
     glutPostRedisplay()
     glutTimerFunc(40, update, 0)
@@ -229,6 +274,10 @@ def run_viewer(sequence):
     glutTimerFunc(50, update, 0)
     glutMouseFunc(mouse)
     glutMotionFunc(motion)
+    # Register your keyboard handler here:
+    glutKeyboardFunc(keyboard)
+    glutSpecialFunc(special_keys)
+
     try:
         glutMouseWheelFunc(lambda wheel, direction, x, y: zoom(direction))
     except:
