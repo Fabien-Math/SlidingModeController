@@ -1,305 +1,236 @@
-import pygame
+# robot_scene.py
+
 import numpy as np
-from pygame.locals import DOUBLEBUF, OPENGL, QUIT, KEYDOWN, KEYUP, MOUSEBUTTONDOWN, MOUSEBUTTONUP, MOUSEMOTION
 from OpenGL.GL import *
-from OpenGL.GLU import gluPerspective
-import math
+from OpenGL.GLU import *
+from OpenGL.GLUT import *
+
+import time
+
+last_time = time.time()
+frame_count = 0
+fps = 0
+
+tf_sequence = []
+frame_index = 0
+
+# Camera control
+camera_radius = 10
+camera_theta = np.pi / 4
+camera_phi = np.pi / 4
+pan_x, pan_y, pan_z = 0.0, 0.0, 0.0
+mouse_prev = [0, 0]
+mouse_button = None
 
 
-def init_opengl():
-    glEnable(GL_DEPTH_TEST)         # Enable depth testing
-    glEnable(GL_LIGHTING)           # Enable lighting
-    glEnable(GL_LIGHT0)             # Enable light #0
-    glEnable(GL_COLOR_MATERIAL)    # Enable color tracking
+def load_tf_sequence(seq):
+    global tf_sequence
+    tf_sequence = seq
 
+def draw_axes(length=0.5):
+    glDisable(GL_LIGHTING)
+    glBegin(GL_LINES)
+    glColor3f(1, 0, 0)  # X - Red
+    glVertex3f(0, 0, 0)
+    glVertex3f(length, 0, 0)
+    glColor3f(0, 1, 0)  # Y - Green
+    glVertex3f(0, 0, 0)
+    glVertex3f(0, length, 0)
+    glColor3f(0, 0, 1)  # Z - Blue (down)
+    glVertex3f(0, 0, 0)
+    glVertex3f(0, 0, -length)
+    glEnd()
+    glEnable(GL_LIGHTING)
+
+def draw_ground(size=100, step=1):
+    glDisable(GL_LIGHTING)
+    glBegin(GL_LINES)
+    glColor3f(0.6, 0.6, 0.6)  # Make it less reflective
+    for i in range(-size, size + 1, step):
+        glVertex3f(i, -size, 0)
+        glVertex3f(i, size, 0)
+        glVertex3f(-size, i, 0)
+        glVertex3f(size, i, 0)
+    glEnd()
+    glEnable(GL_LIGHTING)
+
+
+def draw_robot(tf):
+    x, y, z, roll, pitch, yaw = tf
+
+    # RPY to rotation matrix
+    Rx = np.array([[1, 0, 0],
+                   [0, np.cos(roll), -np.sin(roll)],
+                   [0, np.sin(roll), np.cos(roll)]])
+    Ry = np.array([[np.cos(pitch), 0, np.sin(pitch)],
+                   [0, 1, 0],
+                   [-np.sin(pitch), 0, np.cos(pitch)]])
+    Rz = np.array([[np.cos(yaw), -np.sin(yaw), 0],
+                   [np.sin(yaw), np.cos(yaw), 0],
+                   [0, 0, 1]])
+    R = Rz @ Ry @ Rx
+
+    matrix = np.identity(4)
+    matrix[:3, :3] = R
+    matrix[:3, 3] = [x, y, z]
+    matrix = matrix.T.flatten()
+
+    glPushMatrix()
+    glMultMatrixf(matrix)
+    draw_axes(0.5)
+    glColor3f(0.0, 0.4, 1.0)  # Better for lighting
+    glutSolidCube(0.4)
+    glPopMatrix()
+
+def display():
+    global frame_index
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    glLoadIdentity()
+
+    # Convert spherical camera coordinates to Cartesian
+    cx = camera_radius * np.sin(camera_phi) * np.cos(camera_theta)
+    cy = camera_radius * np.sin(camera_phi) * np.sin(camera_theta)
+    cz = camera_radius * np.cos(camera_phi)
+
+    gluLookAt(cx + pan_x, cy + pan_y, -cz + pan_z,
+          pan_x, pan_y, pan_z,
+          0, 0, -1)
+
+    draw_ground()
+
+    if tf_sequence is not None:
+        draw_robot(tf_sequence[frame_index % len(tf_sequence)])
+
+    # Draw FPS at top-left
+    glDisable(GL_LIGHTING)
+    glColor3f(1, 1, 1)
+    draw_text(10, 580, f"FPS: {fps:.1f}")
+
+    # Draw TF vector at bottom-center
+    if tf_sequence is not None:
+        tf = tf_sequence[frame_index % len(tf_sequence)]
+        tf_str = "Pos: ({:.2f}, {:.2f}, {:.2f}) RPY: ({:.2f}, {:.2f}, {:.2f})".format(*tf)
+        # Center bottom: window width ~800, position text centered at ~400-xoffset
+        text_width = len(tf_str) * 9  # approx width per char in pixels
+        x_pos = 400 - text_width // 2
+        draw_text(x_pos, 10, tf_str)
+    glEnable(GL_LIGHTING)
+
+    glutSwapBuffers()
+
+def zoom(direction):
+    global camera_radius
+    camera_radius *= 0.9 if direction > 0 else 1.1
+    camera_radius = np.clip(camera_radius, 1.0, 1000.0)
+
+def draw_text(x, y, text, font=GLUT_BITMAP_HELVETICA_18):
+    glWindowPos2f(x, y)  # Positions in window coords (pixels)
+    for ch in text:
+        glutBitmapCharacter(font, ord(ch))
+
+def update(value):
+    global frame_index, frame_count, last_time, fps
+    frame_index += 1
+
+    frame_count += 1
+    current_time = time.time()
+    elapsed = current_time - last_time
+    if elapsed >= 1.0:
+        fps = frame_count / elapsed
+        frame_count = 0
+        last_time = current_time
+
+    glutPostRedisplay()
+    glutTimerFunc(40, update, 0)
+
+def mouse(button, state, x, y):
+    global mouse_prev, mouse_button
+    if state == GLUT_DOWN:
+        mouse_button = button
+        mouse_prev = [x, y]
+    else:
+        mouse_button = None
+
+def motion(x, y):
+    global mouse_prev, camera_theta, camera_phi, pan_x, pan_y
+    dx = x - mouse_prev[0]
+    dy = y - mouse_prev[1]
+    mouse_prev = [x, y]
+
+    if mouse_button == GLUT_RIGHT_BUTTON:
+        camera_theta += dx * 0.005
+        camera_phi -= dy * 0.005
+        camera_phi = np.clip(camera_phi, 0.01, np.pi - 0.01)
+    elif mouse_button == GLUT_MIDDLE_BUTTON:
+        # Convert to 3D panning based on camera orientation
+        cam_x = camera_radius * np.sin(camera_phi) * np.cos(camera_theta)
+        cam_y = camera_radius * np.sin(camera_phi) * np.sin(camera_theta)
+        cam_z = camera_radius * np.cos(camera_phi)
+
+        # View direction
+        forward = np.array([-cam_x, -cam_y, cam_z])
+        forward /= np.linalg.norm(forward)
+
+        # Right = forward x up
+        up = np.array([0, 0, -1])
+        right = np.cross(forward, up)
+        right /= np.linalg.norm(right)
+
+        # True up vector
+        true_up = np.cross(right, forward)
+
+        # Scale mouse movement into world space
+        factor = 0.01
+        move = right * (-dx * factor) + true_up * (dy * factor)
+
+        # Apply to pan
+        global pan_x, pan_y, pan_z
+        pan_x += move[0]
+        pan_y += move[1]
+        pan_z += move[2]
+
+def init():
+    glClearColor(0.7, 0.7, 0.7, 1.0)
+    glEnable(GL_DEPTH_TEST)
+
+    # --- Lighting ---
+    glEnable(GL_LIGHTING)
+    glEnable(GL_LIGHT0)
+    
+    # Position light above and in front of scene
+    light_position = [10.0, 10.0, 10.0, 1.0]  # w=1.0 means positional
+    glLightfv(GL_LIGHT0, GL_POSITION, light_position)
+
+    # Light color (white diffuse light)
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, [1.0, 1.0, 1.0, 1.0])
+    glLightfv(GL_LIGHT0, GL_SPECULAR, [0.5, 0.5, 0.5, 1.0])
+
+    # Enable color tracking
+    glEnable(GL_COLOR_MATERIAL)
     glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
 
-    # Set light properties (position, ambient, diffuse)
-    light_pos = [5.0, 5.0, 5.0, 1.0]
-    light_ambient = [0.2, 0.2, 0.2, 1.0]
-    light_diffuse = [0.7, 0.7, 0.7, 1.0]
+    # Optional: Add slight shininess
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, [1.0, 1.0, 1.0, 1.0])
+    glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 32)
 
-    glLightfv(GL_LIGHT0, GL_POSITION, light_pos)
-    glLightfv(GL_LIGHT0, GL_AMBIENT, light_ambient)
-    glLightfv(GL_LIGHT0, GL_DIFFUSE, light_diffuse)
-
-    glShadeModel(GL_SMOOTH)
-
-def draw_robot():
-    # Vertices for the main fuselage (rectangular prism, elongated along X)
-    body_length = 0.5
-    body_height = 0.2
-    body_width  = 0.5
-
-    # Main body vertices (8 corners)
-    body_vertices = [
-        [-body_length/2, -body_height/2, -body_width/2],  # 0 back-bottom-left
-        [ body_length/2, -body_height/2, -body_width/2],  # 1 front-bottom-left
-        [ body_length/2,  body_height/2, -body_width/2],  # 2 front-top-left
-        [-body_length/2,  body_height/2, -body_width/2],  # 3 back-top-left
-        [-body_length/2, -body_height/2,  body_width/2],  # 4 back-bottom-right
-        [ body_length/2, -body_height/2,  body_width/2],  # 5 front-bottom-right
-        [ body_length/2,  body_height/2,  body_width/2],  # 6 front-top-right
-        [-body_length/2,  body_height/2,  body_width/2],  # 7 back-top-right
-    ]
-
-    # Normals for each face of the body
-    body_normals = [
-        [ 0,  0, -1],  # left side
-        [ 0,  0,  1],  # right side
-        [-1,  0,  0],  # back
-        [ 1,  0,  0],  # front
-        [ 0,  1,  0],  # top
-        [ 0, -1,  0],  # bottom
-    ]
-
-    # Faces for main body (each face is a quad, indices in body_vertices)
-    body_faces = [
-        [0, 3, 2, 1],  # left
-        [4, 5, 6, 7],  # right
-        [0, 1, 5, 4],  # bottom (under)
-        [3, 7, 6, 2],  # top (over)
-        [0, 4, 7, 3],  # back
-        [1, 2, 6, 5],  # front
-    ]
-
-    # Nose cone — simple pyramid at front center
-    nose_length = 0.5
-    nose_base_width = 0.4
-    nose_x = body_length/2
-
-    nose_vertices = [
-        [nose_x + nose_length,  0.0,  0.0],                  # tip front
-        [nose_x, -nose_base_width/2,  nose_base_width/2],  # base corners
-        [nose_x, -nose_base_width/2, -nose_base_width/2],
-        [nose_x,  nose_base_width/2, -nose_base_width/2],
-        [nose_x,  nose_base_width/2,  nose_base_width/2],
-    ]
-
-    nose_faces = [
-        [0, 1, 2],  # bottom left triangle
-        [0, 2, 3],  # bottom right triangle
-        [0, 3, 4],  # top right triangle
-        [0, 4, 1],  # top left triangle
-        [1, 2, 3, 4], # base quad
-    ]
-
-    # Draw main body
-    glBegin(GL_QUADS)
-    for i, face in enumerate(body_faces):
-        glNormal3fv(body_normals[i])
-        glColor3fv([0.4, 0.6, 0.8])  # bluish
-        for idx in face:
-            glVertex3fv(body_vertices[idx])
-    glEnd()
-
-
-    # Draw nose cone (4 triangles + base quad)
-    glBegin(GL_TRIANGLES)
-    glColor3fv([0.8, 0.1, 0.1])  # reddish nose
-    # 4 triangles
-    for tri in nose_faces[:4]:
-        # Compute face normal manually for nice lighting:
-        v0 = np.array(nose_vertices[tri[0]])
-        v1 = np.array(nose_vertices[tri[1]])
-        v2 = np.array(nose_vertices[tri[2]])
-        normal = np.cross(v1 - v0, v2 - v0)
-        normal /= np.linalg.norm(normal)
-        glNormal3fv(normal)
-        for idx in tri:
-            glVertex3fv(nose_vertices[idx])
-    glEnd()
-
-    # Base quad of nose (optional)
-    glBegin(GL_QUADS)
-    glNormal3fv([0, -1, 0])  # facing down approx
-    for idx in nose_faces[4]:
-        glVertex3fv(nose_vertices[idx])
-    glEnd()
-
-
-def draw_ground(size=20, step=1):
-    glBegin(GL_LINES)
-    for x in range(-size, size + 1, step):
-        glVertex3fv([x, 0, -size])
-        glVertex3fv([x, 0, size])
-    for z in range(-size, size + 1, step):
-        glVertex3fv([-size, 0, z])
-        glVertex3fv([size, 0, z])
-    glEnd()
-
-def quaternion_to_matrix(q):
-    w, x, y, z = q
-    return np.array([
-        [1 - 2*(y*y + z*z),     2*(x*y - w*z),     2*(x*z + w*y), 0],
-        [    2*(x*y + w*z), 1 - 2*(x*x + z*z),     2*(y*z - w*x), 0],
-        [    2*(x*z - w*y),     2*(y*z + w*x), 1 - 2*(x*x + y*y), 0],
-        [0, 0, 0, 1]
-    ], dtype=np.float32)
-
-def normalize(v):
-    return v / np.linalg.norm(v)
-
-def axis_angle_to_quaternion(axis, angle_rad):
-    axis = normalize(axis)
-    s = math.sin(angle_rad / 2.0)
-    return np.array([math.cos(angle_rad / 2.0), *(axis * s)], dtype=np.float32)
-
-def get_camera_forward():
-    forward_quat = quaternion_multiply(camera_rot, [0, 0, 0, -1])
-    forward_quat = quaternion_multiply(forward_quat, [camera_rot[0], -camera_rot[1], -camera_rot[2], -camera_rot[3]])
-    return normalize(forward_quat[1:])
-
-def get_camera_directions():
-    # Camera forward vector (negative Z in camera space)
-    forward = quaternion_multiply(camera_rot, [0, 0, 0, -1])
-    forward = quaternion_multiply(forward, [camera_rot[0], -camera_rot[1], -camera_rot[2], -camera_rot[3]])
-    forward = normalize(forward[1:])
-    
-    # Camera right vector (positive X)
-    right = quaternion_multiply(camera_rot, [0, 1, 0, 0])
-    right = quaternion_multiply(right, [camera_rot[0], -camera_rot[1], -camera_rot[2], -camera_rot[3]])
-    right = normalize(right[1:])
-    
-    # Camera up vector (positive Y)
-    up = np.cross(right, forward)
-    
-    return forward, right, up
-
-def quaternion_multiply(q1, q2):
-    w1, x1, y1, z1 = q1
-    w2, x2, y2, z2 = q2
-    return np.array([
-        w1*w2 - x1*x2 - y1*y2 - z1*z2,
-        w1*x2 + x1*w2 + y1*z2 - z1*y2,
-        w1*y2 - x1*z2 + y1*w2 + z1*x2,
-        w1*z2 + x1*y2 - y1*x2 + z1*w2
-    ], dtype=np.float32)
-
-
-# Camera state
-camera_pos = np.array([0.0, 2.0, 10.0], dtype=np.float32)
-camera_rot = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # quaternion
-mouse_buttons = [False, False, False]
-last_mouse = (0, 0)
-
-def get_camera_matrix():
-    rot_matrix = quaternion_to_matrix(camera_rot)
-    transform = np.identity(4, dtype=np.float32)
-    transform[:3, 3] = -camera_pos
-    return rot_matrix @ transform
-
-def handle_mouse_motion(rel):
-    global camera_rot, camera_pos
-    dx, dy = rel
-    dx *= 0.01
-    dy *= 0.01
-
-    if mouse_buttons[2]:  # Right mouse drag = rotate
-        # Trackball-like rotation
-        axis = np.array([-dy, -dx, 0.0], dtype=np.float32)
-        angle = np.linalg.norm([dx, dy])
-        if angle > 0:
-            q_rot = axis_angle_to_quaternion(axis, angle)
-            camera_rot = quaternion_multiply(q_rot, camera_rot)
-
-    elif mouse_buttons[1]:  # Middle mouse drag = pan
-        # Move along local camera axes
-        right = quaternion_multiply(camera_rot, [0, 1, 0, 0])
-        up = quaternion_multiply(camera_rot, [0, 0, 1, 0])
-        right_vec = np.array(right[1:])
-        up_vec = np.array(up[1:])
-        camera_pos -= right_vec * dx * 5
-        camera_pos += up_vec * dy * 5
-
-
-def handle_input():
-    global camera_pos, camera_yaw, camera_pitch
-    move_speed = 0.1  # Adjust to your liking
-
-    keys = pygame.key.get_pressed()
-    forward, right, up = get_camera_directions()
-
-    if keys[pygame.K_z]:
-        camera_pos += forward * move_speed
-    if keys[pygame.K_s]:
-        camera_pos -= forward * move_speed
-    if keys[pygame.K_q]:
-        camera_pos -= right * move_speed
-    if keys[pygame.K_d]:
-        camera_pos += right * move_speed
-    if keys[pygame.K_a]:
-        camera_pos -= up * move_speed
-    if keys[pygame.K_e]:
-        camera_pos += up * move_speed
-
-
-def Scene3D(positions, quats):
-    global mouse_buttons, last_mouse, camera_pos
-    pygame.init()
-    display = (800, 600)
-    pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
-    pygame.display.set_caption("3D Cube with Quaternion Camera")
-
-    glViewport(0, 0, display[0], display[1])
     glMatrixMode(GL_PROJECTION)
-    glLoadIdentity()
-    gluPerspective(60, display[0] / display[1], 0.1, 100.0)
-
+    gluPerspective(60, 1.0, 0.1, 1000.0)
     glMatrixMode(GL_MODELVIEW)
-    glEnable(GL_DEPTH_TEST)
-    glClearColor(0.1, 0.1, 0.1, 1.0)
 
-    init_opengl()
 
-    clock = pygame.time.Clock()
-    index = 0
-    running = True
-
-    while running:
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-        clock.tick(30)
-        for event in pygame.event.get():
-            if event.type == QUIT:
-                running = False
-            elif event.type == KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-            elif event.type == MOUSEBUTTONDOWN:
-                if event.button <= 3:
-                    mouse_buttons[event.button - 1] = True
-                elif event.button == 4:  # Scroll up
-                    forward = get_camera_forward()
-                    camera_pos += forward * 1.0  # Zoom in
-                elif event.button == 5:  # Scroll down
-                    forward = get_camera_forward()
-                    camera_pos -= forward * 1.0  # Zoom out
-            elif event.type == MOUSEBUTTONUP:
-                if event.button <= 3:
-                    mouse_buttons[event.button - 1] = False
-            elif event.type == MOUSEMOTION:
-                if any(mouse_buttons):
-                    handle_mouse_motion(event.rel)
-        handle_input()
-
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        glLoadIdentity()
-        glMultMatrixf(get_camera_matrix().T)
-        draw_ground()
-
-        if index < len(positions):
-            position, quat = positions[index], quats[index]
-            glPushMatrix()
-            glTranslatef(*position)
-            glMultMatrixf(quaternion_to_matrix(quat).T)
-            draw_robot()
-            glPopMatrix()
-            index += 1
-        else:
-            index = 0
-            draw_robot()
-
-        pygame.display.flip()
-
-    pygame.quit()
+def run_viewer(sequence):
+    load_tf_sequence(sequence)
+    glutInit()
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
+    glutInitWindowSize(800, 600)
+    glutCreateWindow(b"3D Robot Viewer")
+    init()
+    glutDisplayFunc(display)
+    glutTimerFunc(50, update, 0)
+    glutMouseFunc(mouse)
+    glutMotionFunc(motion)
+    try:
+        glutMouseWheelFunc(lambda wheel, direction, x, y: zoom(direction))
+    except:
+        print("Mouse wheel not supported; zoom with +/- keys instead.")
+    glutMainLoop()
