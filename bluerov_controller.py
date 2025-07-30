@@ -3,7 +3,7 @@ import tqdm
 from bluerov_sim import Simulator
 from scipy.spatial.transform import Rotation
 import bluerov_plot as bplt
-from display3D import Scene3D
+from display3D import run_viewer
 
 class BlueROV:
 	def __init__(self, k_smc, lambda_smc, phi):
@@ -67,9 +67,9 @@ class ThrusterSystem:
 		self.force = np.zeros(n_thrusters)
 		self.rpm = np.zeros(n_thrusters)
 
-	def update(self, dt, tau_desired):
+	def update(self, dt, u_cmd):
 		# Compute desired thruster forces using pseudo-inverse control allocation
-		thruster_cmd = self.Tp @ tau_desired
+		thruster_cmd = self.T.T @ u_cmd
 
 		# Clip desired thruster commands to actuator physical limits
 		thruster_cmd = np.clip(thruster_cmd, self.min_force, self.max_force)
@@ -107,6 +107,7 @@ class Controller:
 		self.last_desired_tf = None
 		self.mission_finished = False
 
+		self.abs_eta_err = np.zeros(6)
 		self.eta_err = np.zeros(6)
 		self.eta_tol = np.array([0.05, 0.05, 0.05, 0.05, 0.05, 0.05])
 		self.nu_err = np.zeros(6)
@@ -158,24 +159,13 @@ class Controller:
 					self.desired_tf = eta
 			
 	def compute_error(self, eta, nu):
-		t_world_rov = eta[:3]
-		R_world_rov = Rotation.from_euler('zyx', eta[3:]).as_matrix()
-		T_world_rov = build_T(R_world_rov, t_world_rov)
+		self.abs_eta_err = self.desired_tf - eta
+		eta_err = self.desired_tf - eta
+		if np.linalg.norm(eta_err[:3]) > 1.0:
+			eta_err[:3] /= np.linalg.norm(eta_err[:3])
 
-		t_world_target = self.desired_tf[:3]
-		R_world_target = Rotation.from_euler('zyx', self.desired_tf[3:]).as_matrix()
-		T_world_target = build_T(R_world_target, t_world_target)
-
-		T_rov_target = np.matmul(np.linalg.inv(T_world_rov), T_world_target)
-
-		eta_err = np.zeros(6)
-		eta_err[:3] = T_rov_target[0:3, 3]
-		eta_err[3:] = (self.desired_tf - eta)[3:] #Rotation.from_matrix(T_rov_target[0:3, 0:3]).as_euler('zyx')
-		# if np.linalg.norm(eta_diff[:3]) > 5.0:
-		# 	eta_diff[:3] /= np.linalg.norm(eta_diff[:3])
-
-		# if np.linalg.norm(eta_err[3:]) > 0.3:
-		# 	eta_err[3:] /= np.linalg.norm(eta_err[3:])
+		if np.linalg.norm(eta_err[3:]) > 0.5:
+			eta_err[3:] /= np.linalg.norm(eta_err[3:])
 
 		self.eta_err = eta_err
 		self.nu_err = nu
@@ -209,13 +199,14 @@ def compute_total_distance(etas):
 
 
 def simulate(k_smc, lambda_smc, phi, current_params, train=False):
-	dt = 0.03
+	dt = 0.02
 	
 	bl = BlueROV(k_smc, lambda_smc, phi)
+	# bl.eta = np.array([0, 0, 0, 0, 0, 0])
 	bl.controller.add_waypoint(np.array([[0.5, 5.0, 0, 0, 0, 0], [-4.0, 0.0, -3.0, 0, 0, 0], [0, 0, 10, 0, 0, 0]]))
 	sim = Simulator(dt, bl.eta, bl.nu, bl.m, bl.rg, bl.I0, bl.Ma, bl.Dl, bl.Dq, current_params)
 
-	N = 2000
+	N = 5000
 
 	# LOGGING
 	gammas = np.zeros((N, 6))
@@ -223,9 +214,11 @@ def simulate(k_smc, lambda_smc, phi, current_params, train=False):
 	nus = np.zeros((N, 6))
 	etas = np.zeros((N, 6))
 	quats = np.zeros((N, 4))
+	abs_eta_errs = np.zeros((N, 6))
 	eta_errs = np.zeros((N, 6))
 	cmds = np.zeros((N, 6))
 	forces = np.zeros((N, 8))
+	forces_6 = np.zeros((N, 6))
 
 	for i in range(N):
 		sim.update_states(bl.eta, bl.nu)
@@ -234,11 +227,13 @@ def simulate(k_smc, lambda_smc, phi, current_params, train=False):
 
 
 		gammas[i] = bl.gamma
+		abs_eta_errs[i] = bl.controller.abs_eta_err
 		eta_errs[i] = bl.controller.eta_err
 		nus[i] = bl.nu
 		etas[i] = bl.eta
 		cmds[i] = bl.controller.SMC.u
 		forces[i] = bl.controller.thrusters.force
+		forces_6[i] = bl.controller.f_thrust
 		time[i] = (i+1)*dt
 		quats[i] = Rotation.from_euler('zyx', bl.eta[3:]).as_quat()
 
@@ -251,17 +246,18 @@ def simulate(k_smc, lambda_smc, phi, current_params, train=False):
 
 	if not train:
 		compute_total_distance(etas)
-		bplt.plot(time[:i], eta_errs[:i], 'eta errors')
+		# bplt.plot(time[:i], abs_eta_errs[:i], 'abs eta errors')
+		# bplt.plot(time[:i], eta_errs[:i], 'eta errors')
 		# bplt.plot(time[:i], etas[:i], 'eta')
 		# bplt.plot(time[:i], cmds[:i], 'U cmd')
 		# bplt.plot(time[:i], nus[:i], 'nu')
+		# bplt.plot(time[:i], forces_6[:i], 'forces_6')
 		# bplt.plot_nm(time[:i], forces[:i], 4, 2, 'C force cmd')
 
-		bplt.show()
+		# bplt.show()
 
 		# bplt.plot_3D(etas[:i])
-
-		Scene3D(etas[::5,3:], quats[::5])
+		run_viewer(etas[:i:5])
 
 def main(most_probable_k_values = None, most_probable_l_values = None):
 	current_params = [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)]
@@ -269,8 +265,8 @@ def main(most_probable_k_values = None, most_probable_l_values = None):
 		k_smc 		= most_probable_k_values
 		lambda_smc 	= most_probable_l_values
 	else:
-		k_smc 		= np.array([15, 15, 15, 1, 1, 1])
-		lambda_smc 	= np.array([1,1,1,1,1,1])
+		k_smc 		= np.array([4, 4, 5, 2, 2, 2])
+		lambda_smc 	= np.array([2, 2, 2, 2, 2, 2])
 	phi = 0.8
 	t = simulate(k_smc, lambda_smc, phi, current_params)
 

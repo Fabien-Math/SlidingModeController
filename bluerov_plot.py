@@ -147,7 +147,7 @@ def plot_nm(time, var, n, m, title = 'Title'):
 	for i in range(m):
 		for j in range(n):
 			# Positions
-			axs[j, i].plot(time, var[:, j + i*m], label=f'{j + i*m}')
+			axs[j, i].plot(time, var[:, j + i*n], label=f'{j + i*n}')
 			axs[j, i].legend()
 			axs[j, i].grid(True)
 	for j in range(m):

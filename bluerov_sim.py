@@ -103,7 +103,7 @@ class Simulator:
 		# DAMPING
 		self.compute_D()
 		# CORIOLIS AND CENTRIPETAL
-		self.compute_C()
+		# self.compute_C()
 		# EXTERNAL FORCES
 		self.compute_T(T_ext)
 

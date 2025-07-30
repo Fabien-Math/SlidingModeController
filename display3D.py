@@ -116,7 +116,7 @@ def display():
     glDisable(GL_LIGHTING)
     glColor3f(1, 1, 1)
     draw_text(10, 580, f"FPS: {fps:.1f}")
-    draw_text(700, 580, f"Speed: {playback_speed:.2f}x")
+    draw_text(1080, 580, f"Speed: {playback_speed:.2f}x")
 
     # Draw TF vector at bottom-center
     if tf_sequence is not None:
@@ -124,7 +124,7 @@ def display():
         tf_str = "Pos: ({:.2f}, {:.2f}, {:.2f}) RPY: ({:.2f}, {:.2f}, {:.2f})".format(*tf)
         # Center bottom: window width ~800, position text centered at ~400-xoffset
         text_width = len(tf_str) * 9  # approx width per char in pixels
-        x_pos = 400 - text_width // 2
+        x_pos = 600 - text_width // 2
         draw_text(x_pos, 10, tf_str)
     glEnable(GL_LIGHTING)
 
@@ -259,7 +259,7 @@ def init():
     glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 32)
 
     glMatrixMode(GL_PROJECTION)
-    gluPerspective(60, 1.0, 0.1, 1000.0)
+    gluPerspective(60, 2.0, 0.1, 1000.0)
     glMatrixMode(GL_MODELVIEW)
 
 
@@ -267,7 +267,7 @@ def run_viewer(sequence):
     load_tf_sequence(sequence)
     glutInit()
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
-    glutInitWindowSize(800, 600)
+    glutInitWindowSize(1200, 600)
     glutCreateWindow(b"3D Robot Viewer")
     init()
     glutDisplayFunc(display)
