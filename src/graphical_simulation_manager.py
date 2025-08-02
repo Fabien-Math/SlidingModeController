@@ -1,6 +1,6 @@
 from ocean import Ocean
 from robot import Robot
-from viewer import run_viewer
+from viewer.viewer import Viewer
 import tqdm
 import numpy as np
 
@@ -10,19 +10,18 @@ class GraphicalSimulationManager:
 		self.end_time = simulation_params['end_time']
 
 		self.robot = Robot(robot_params)
+		self.robot.log = True
 		self.ocean = Ocean(environment_params)
 
+		self.viewer = Viewer(self.robot, self.dt)
+
 	def simulate(self):
-		etas = []
-		nus = []
 		for i in tqdm.tqdm(range(int(self.end_time/self.dt))):
 			self.robot.update(self.dt, self.ocean)
-			etas.append(self.robot.eta)
-			nus.append(self.robot.nu)
 
 			if self.robot.controller.mission_finished:
 				print(f"Mision accomplished!\nTotal simulation time: {i*self.dt:.3f} s")
 				break
-		
-		print(np.linalg.norm(nus[-1]))
-		run_viewer(etas[::10], nus[::10])
+
+		self.robot.logger.np_format()
+		self.viewer.run()

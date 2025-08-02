@@ -3,8 +3,8 @@ from simulation_manager import SimulationManager
 from graphical_simulation_manager import GraphicalSimulationManager
 
 def main():
-	# filename = "config/bluerov_config.yaml"
-	filename = "config/nautile_config.yaml"
+	filename = "config/bluerov_config.yaml"
+	# filename = "config/nautile_config.yaml"
 	scenario_params = load_config(filename=filename)
 	
 	simulation_params, robot_params, environment_params = scenario_params

@@ -2,6 +2,7 @@ import numpy as np
 
 from controller import ControllerManager
 from thruster_system import ThrusterSystem
+from logging_system import LoggingSystem
 
 
 def S(v):
@@ -52,6 +53,10 @@ class Robot:
 		self.thrusters = ThrusterSystem(robot_params["thruster"])
 		self.controller = ControllerManager(robot_params["controller"], self.thrusters)
 		self.controller.desired_tfs = list(robot_params['mission'])
+
+		self.time = 0
+		self.log = True
+		self.logger = LoggingSystem(self)
 
 
 	def compute_Crb(self):
@@ -110,6 +115,10 @@ class Robot:
 		self.compute_nu(dt)
 		# Position calculation
 		self.compute_eta(dt)
+
+		self.time += dt
+		if self.log:
+			self.logger.log_state(self.time)
 	
 	def compute_nu(self, dt):
 		self.nu = (self.eta - self.eta_prev) / dt

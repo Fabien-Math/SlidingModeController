@@ -10,10 +10,10 @@ class ControllerManager:
 		self.last_desired_tf = None
 		self.mission_finished = False
 
-		self.abs_eta_err = np.zeros(6)
-		self.eta_err = np.zeros(6)
+		self.abs_etas_err = np.zeros(6)
+		self.etas_err = np.zeros(6)
 		self.eta_tol = controller_params['eta_tol']
-		self.nu_err = np.zeros(6)
+		self.nus_err = np.zeros(6)
 		self.nu_tol = controller_params['nu_tol']
 
 		self.T = thruster_system.T
@@ -42,7 +42,7 @@ class ControllerManager:
 
 	def manage_waypoint(self, eta, nu):
 		if self.desired_tf is not None:
-			if np.all(np.abs(self.eta_err) < self.eta_tol) and np.all(np.abs(self.nu_err) < self.nu_tol) :
+			if np.all(np.abs(self.etas_err) < self.eta_tol) and np.all(np.abs(self.nus_err) < self.nu_tol) :
 				self.last_desired_tf = self.desired_tf
 				# print('Arrived')
 				self.desired_tf = None
@@ -61,7 +61,7 @@ class ControllerManager:
 	
 
 	def compute_error(self, eta, nu):
-		self.abs_eta_err = self.desired_tf - eta
+		self.abs_etas_err = self.desired_tf - eta
 		eta_err = self.desired_tf - eta
 		if np.linalg.norm(eta_err[:3]) > 1.0:
 			eta_err[:3] /= np.linalg.norm(eta_err[:3])
@@ -69,8 +69,8 @@ class ControllerManager:
 		if np.linalg.norm(eta_err[3:]) > 0.5:
 			eta_err[3:] /= np.linalg.norm(eta_err[3:])
 
-		self.eta_err = eta_err
-		self.nu_err = nu
+		self.etas_err = eta_err
+		self.nus_err = nu
 	
 
 	def update(self, dt, eta, nu):
@@ -78,6 +78,6 @@ class ControllerManager:
 
 		self.compute_error(eta, nu)
 
-		self.controller.update(self.eta_err, self.nu_err)
+		self.controller.update(self.etas_err, self.nus_err)
 		self.thrusters.update(dt, self.controller.cmd)  # Apply thruster dynamics
 		
